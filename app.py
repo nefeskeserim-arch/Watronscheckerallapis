@@ -1,71 +1,73 @@
 from flask import Flask, request, jsonify
-from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 import requests
 import time
 import os
-from functools import lru_cache
-import json
 from collections import defaultdict
-import threading
 
 app = Flask(__name__)
-CORS(app)
 
-# 🚀 RENDER.COM OPTIMIZE RATE LIMITER
+# 🛡️ DDoS KORUMA - RATE LIMITING
 limiter = Limiter(
+    get_remote_address,
     app=app,
-    key_func=get_remote_address,
-    default_limits=["2000 per day", "300 per hour", "50 per minute", "3 per second"],
-    storage_uri="memory://"
+    default_limits=["500 per day", "100 per hour", "20 per minute"],
+    storage_uri="memory://",
 )
 
-# 📊 RENDER FRIENDLY DDoS KORUMA
-REQUEST_LOG = defaultdict(list)
-SUSPICIOUS_IPS = set()
-
-# WATRONS BRANDING
-WATRONS_TELEGRAM = "t.me/watronschecker"
-WATRONS_CREATOR = "@tanrigibi"
-APP_NAME = "Watrons Checker"
+# 🚨 IP BAZLI KORUMA
+REQUEST_TRACKER = defaultdict(list)
+BLOCKED_IPS = set()
 
 def check_ddos_protection(ip):
-    """Basit ama etkili DDoS koruması"""
+    """DDoS koruma kontrolü"""
     now = time.time()
     
-    # 1 saniyede 10'dan fazla istek?
-    recent_requests = [req_time for req_time in REQUEST_LOG[ip] if now - req_time < 1]
-    if len(recent_requests) > 10:
-        SUSPICIOUS_IPS.add(ip)
+    # 1 dakika içinde 30'dan fazla istek?
+    recent_requests = [req_time for req_time in REQUEST_TRACKER[ip] if now - req_time < 60]
+    if len(recent_requests) > 30:
+        BLOCKED_IPS.add(ip)
         return False
     
-    # 1 dakikada 100'den fazla istek?
-    minute_requests = [req_time for req_time in REQUEST_LOG[ip] if now - req_time < 60]
-    if len(minute_requests) > 100:
-        SUSPICIOUS_IPS.add(ip)
+    # 1 saniyede 5'ten fazla istek?
+    second_requests = [req_time for req_time in recent_requests if now - req_time < 1]
+    if len(second_requests) > 5:
+        BLOCKED_IPS.add(ip)
         return False
     
-    REQUEST_LOG[ip] = recent_requests[-100:]
+    REQUEST_TRACKER[ip] = recent_requests[-50:]  # Son 50 isteği tut
     return True
 
 @app.before_request
-def before_request():
+def before_each_request():
     """Her istekten önce DDoS kontrolü"""
     client_ip = get_remote_address()
+    
+    if client_ip in BLOCKED_IPS:
+        return jsonify({
+            "error": "Blocked - Too many requests",
+            "message": "IP adresiniz geçici olarak bloke edildi",
+            "telegram": "https://t.me/watronschecker"
+        }), 429
     
     if not check_ddos_protection(client_ip):
         return jsonify({
             "error": "Rate limit exceeded", 
-            "message": "Too many requests",
-            "telegram": WATRONS_TELEGRAM,
-            "creator": WATRONS_CREATOR
+            "message": "Çok fazla istek gönderdiniz",
+            "telegram": "https://t.me/watronschecker"
         }), 429
     
-    REQUEST_LOG[client_ip].append(time.time())
+    REQUEST_TRACKER[client_ip].append(time.time())
 
-# TÜM API'LER (Aynı liste)
+# WATRONS BRANDING
+WATRONS_TELEGRAM = "https://t.me/watronschecker"
+WATRONS_CREATOR = "@tanrigibi"
+APP_NAME = "Watrons Checker"
+
+# TÜM API'LER
 TARGET_APIS = {
+    # ANA NABI API'LERİ
     "secmen": "http://api.nabi.gt.tc/secmen",
     "ogretmen": "http://api.nabi.gt.tc/ogretmen",
     "yabanci": "http://api.nabi.gt.tc/yabanci",
@@ -119,10 +121,14 @@ TARGET_APIS = {
     "leak": "http://api.nabi.gt.tc/leak",
     "telegram": "http://api.nabi.gt.tc/telegram",
     "sifre_encrypt": "http://api.nabi.gt.tc/sifre_encrypt",
+    
+    # YAPAY ZEKA API'LERİ
     "gpt4mini": "https://kvz-nab.yapayzeka-api.gt.tc/gpt4mini",
     "gemini1.5pro": "https://kvz-nab.yapayzeka-api.gt.tc/gemini1.5pro",
     "gpt5model": "https://kvz-nab.yapayzeka-api.gt.tc/gpt5model",
     "deepseek": "https://kvz-nab.yapayzeka-api.gt.tc/deepseek",
+    
+    # COMMAND API'LERİ
     "hava": "https://nabi-yeni-api.onrender.com/command/hava",
     "kur": "https://nabi-yeni-api.onrender.com/command/kur",
     "steam_kod": "https://nabi-yeni-api.onrender.com/command/steam_kod",
@@ -158,164 +164,93 @@ TARGET_APIS = {
     "iyzico": "https://he.nabinin-sikis-cc-api.gt.tc/iyzico"
 }
 
-class APIProxy:
-    def __init__(self):
-        self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'Watrons-Proxy/1.0',
-            'Accept': 'application/json'
-        })
-    
-    def clean_response(self, data):
-        """TÜM Nabi bilgilerini temizle ve Watrons branding ekle"""
-        if isinstance(data, dict):
-            cleaned = {}
-            for key, value in data.items():
-                # NABI BİLGİLERİNİ TAMAMEN TEMİZLE
-                if key.lower() in ["creator", "telegram", "channel", "admin", "owner"]:
-                    if any(nabi_word in str(value).lower() for nabi_word in ["nabi", "sukazatkinis", "@sukazatkinis", "nabisystem"]):
-                        continue
-                
-                # RESPONSE İÇİNDEKİ RESPONSE'U ÇIKAR
-                if key == "response" and isinstance(value, dict):
-                    cleaned.update(self.clean_response(value))
-                else:
-                    cleaned[key] = self.clean_response(value)
-            
-            # WATRONS BRANDING EKLE (sadece ana response'ta)
-            if not any(key in cleaned for key in ["telegram", "channel"]):
-                cleaned["telegram"] = WATRONS_TELEGRAM
-                cleaned["creator"] = WATRONS_CREATOR
-            
-            return cleaned
-        elif isinstance(data, list):
-            return [self.clean_response(item) for item in data]
-        else:
-            return data
-    
-    def add_watrons_branding(self, response_data):
-        """Watrons branding ekle"""
-        if isinstance(response_data, dict):
-            response_data["telegram"] = WATRONS_TELEGRAM
-            response_data["creator"] = WATRONS_CREATOR
-            response_data["app"] = APP_NAME
-        return response_data
-    
-    def forward_request(self, target_url, params, method="GET"):
-        try:
-            timeout = (10, 30)
-            
-            if method == "GET":
-                response = self.session.get(target_url, params=params, timeout=timeout)
-            else:
-                response = self.session.post(target_url, data=params, timeout=timeout)
-            
-            if response.status_code == 200:
-                data = response.json()
-                cleaned_data = self.clean_response(data)
-                branded_data = self.add_watrons_branding(cleaned_data)
-                return branded_data, 200
-            else:
-                # HATA DURUMUNDA DA WATRONS BRANDING
-                error_data = {
-                    "error": f"API hatası: {response.status_code}",
-                    "message": "Servis geçici olarak kullanılamıyor",
-                    "telegram": WATRONS_TELEGRAM,
-                    "creator": WATRONS_CREATOR
-                }
-                return error_data, response.status_code
-                
-        except requests.exceptions.Timeout:
-            return {
-                "error": "API timeout - servis yanıt vermiyor",
-                "telegram": WATRONS_TELEGRAM,
-                "creator": WATRONS_CREATOR
-            }, 504
-        except requests.exceptions.ConnectionError:
-            return {
-                "error": "Bağlantı hatası - API'ye ulaşılamıyor", 
-                "telegram": WATRONS_TELEGRAM,
-                "creator": WATRONS_CREATOR
-            }, 503
-        except Exception as e:
-            return {
-                "error": f"Beklenmeyen hata: {str(e)}",
-                "telegram": WATRONS_TELEGRAM, 
-                "creator": WATRONS_CREATOR
-            }, 500
-
-proxy = APIProxy()
-
-# 🏠 ANA SAYFA
-@app.route("/")
+@app.route('/')
 @limiter.limit("10 per minute")
 def home():
     return jsonify({
         "message": "Watrons Checker API",
         "creator": WATRONS_CREATOR,
         "telegram": WATRONS_TELEGRAM,
-        "services": list(TARGET_APIS.keys()),
-        "total_services": len(TARGET_APIS),
+        "total_apis": len(TARGET_APIS),
         "status": "active",
-        "ddos_protection": "enabled"
+        "ddos_protection": "enabled",
+        "rate_limits": "500/day, 100/hour, 20/minute"
     })
 
-# 📊 HEALTH CHECK
-@app.route("/health")
-def health_check():
+@app.route('/health')
+def health():
     return jsonify({
         "status": "healthy",
         "app": APP_NAME,
-        "telegram": WATRONS_TELEGRAM,
-        "creator": WATRONS_CREATOR,
         "timestamp": time.time(),
-        "active_ips": len(REQUEST_LOG),
-        "suspicious_ips": len(SUSPICIOUS_IPS)
+        "blocked_ips": len(BLOCKED_IPS),
+        "active_ips": len(REQUEST_TRACKER)
     })
 
-# 🔄 DYNAMIC API PROXY
-@app.route("/api/<path:service_name>", methods=["GET", "POST"])
+@app.route('/api/<service_name>', methods=['GET', 'POST'])
 @limiter.limit("30 per minute")
 def api_proxy(service_name):
-    client_ip = get_remote_address()
-    REQUEST_LOG[client_ip].append(time.time())
-    
     if service_name not in TARGET_APIS:
         return jsonify({
-            "error": "Service not found",
-            "available_services": list(TARGET_APIS.keys())[:10],
-            "telegram": WATRONS_TELEGRAM,
-            "creator": WATRONS_CREATOR
+            "error": "API not found", 
+            "available_apis": list(TARGET_APIS.keys())[:10],
+            "telegram": WATRONS_TELEGRAM
         }), 404
     
     target_url = TARGET_APIS[service_name]
     
-    if request.method == "GET":
-        params = request.args.to_dict()
-    else:
-        params = request.get_json() if request.is_json else request.form.to_dict()
-    
-    result, status_code = proxy.forward_request(
-        target_url, 
-        params, 
-        request.method
-    )
-    
-    return jsonify(result), status_code
+    try:
+        if request.method == 'GET':
+            params = request.args.to_dict()
+            response = requests.get(target_url, params=params, timeout=10)
+        else:
+            data = request.get_json() if request.is_json else request.form.to_dict()
+            response = requests.post(target_url, data=data, timeout=10)
+        
+        if response.status_code == 200:
+            result = response.json()
+            # Nabi bilgilerini temizle ve Watrons ekle
+            if isinstance(result, dict):
+                if 'creator' in result:
+                    result['creator'] = WATRONS_CREATOR
+                if 'telegram' in result:
+                    result['telegram'] = WATRONS_TELEGRAM
+                else:
+                    result['telegram'] = WATRONS_TELEGRAM
+            return jsonify(result)
+        else:
+            return jsonify({
+                "error": f"API error: {response.status_code}",
+                "telegram": WATRONS_TELEGRAM
+            }), response.status_code
+            
+    except requests.exceptions.Timeout:
+        return jsonify({
+            "error": "API timeout",
+            "telegram": WATRONS_TELEGRAM
+        }), 504
+    except Exception as e:
+        return jsonify({
+            "error": f"Internal error: {str(e)}",
+            "telegram": WATRONS_TELEGRAM
+        }), 500
 
-# 🧹 PERIODIC CLEANUP
-def cleanup_old_requests():
+# 🧹 Temizleme thread'i
+import threading
+def cleanup_old_ips():
+    """Eski IP kayıtlarını temizle"""
     while True:
-        time.sleep(300)
+        time.sleep(300)  # 5 dakikada bir
         now = time.time()
-        for ip in list(REQUEST_LOG.keys()):
-            REQUEST_LOG[ip] = [t for t in REQUEST_LOG[ip] if now - t < 3600]
-            if not REQUEST_LOG[ip]:
-                del REQUEST_LOG[ip]
+        for ip in list(REQUEST_TRACKER.keys()):
+            REQUEST_TRACKER[ip] = [t for t in REQUEST_TRACKER[ip] if now - t < 3600]
+            if not REQUEST_TRACKER[ip]:
+                del REQUEST_TRACKER[ip]
 
-if __name__ == "__main__":
-    cleanup_thread = threading.Thread(target=cleanup_old_requests, daemon=True)
-    cleanup_thread.start()
-    
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port, debug=False)
+# Thread'i başlat
+cleanup_thread = threading.Thread(target=cleanup_old_ips, daemon=True)
+cleanup_thread.start()
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port, debug=False)
