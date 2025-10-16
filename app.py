@@ -61,6 +61,10 @@ def after_request(response):
 WATRONS_TELEGRAM = "https://t.me/watronschecker"
 WATRONS_CREATOR = "@tanrigibi"
 
+# DOMAIN OTOMATİK ALGILAMA
+def get_base_url():
+    return request.host_url.rstrip('/')
+
 # TÜM API'LER VE PARAMETRELERİ
 TARGET_APIS = {
     "secmen": {"url": "http://api.nabi.gt.tc/secmen", "params": ["tc"]},
@@ -158,17 +162,26 @@ TARGET_APIS = {
 @app.route('/')
 @limiter.limit("10 per minute")
 def home():
+    base_url = get_base_url()
     api_list = {}
+    
     for api_name, api_info in TARGET_APIS.items():
+        example_url = f"{base_url}/api/{api_name}"
+        if api_info["params"]:
+            example_url += "?" + "&".join([f"{param}=deger" for param in api_info["params"]])
+        
         api_list[api_name] = {
-            "url": api_info["url"],
-            "params": api_info["params"]
+            "url": f"{base_url}/api/{api_name}",
+            "target_api": api_info["url"],
+            "parameters": api_info["params"],
+            "example": example_url
         }
     
     return jsonify({
         "message": "Watrons Checker API",
         "creator": WATRONS_CREATOR,
         "telegram": WATRONS_TELEGRAM,
+        "base_url": base_url,
         "total_apis": len(TARGET_APIS),
         "status": "active",
         "apis": api_list
@@ -176,7 +189,11 @@ def home():
 
 @app.route('/health')
 def health():
-    return jsonify({"status": "healthy", "timestamp": time.time()})
+    return jsonify({
+        "status": "healthy", 
+        "timestamp": time.time(),
+        "base_url": get_base_url()
+    })
 
 @app.route('/api/<service_name>', methods=['GET', 'POST'])
 @limiter.limit("30 per minute")
@@ -210,6 +227,7 @@ def api_proxy(service_name):
                 "error": "Missing parameters",
                 "required_params": expected_params,
                 "missing": missing_params,
+                "example": f"{get_base_url()}/api/{service_name}?{'&'.join([f'{p}=deger' for p in expected_params])}",
                 "telegram": WATRONS_TELEGRAM
             }), 400
         
@@ -271,11 +289,14 @@ def api_help(service_name):
         }), 404
     
     api_info = TARGET_APIS[service_name]
+    base_url = get_base_url()
+    
     return jsonify({
         "api": service_name,
-        "url": api_info["url"],
+        "your_endpoint": f"{base_url}/api/{service_name}",
+        "target_api": api_info["url"],
         "required_parameters": api_info["params"],
-        "example": f"/api/{service_name}?{api_info['params'][0]}=deger",
+        "example": f"{base_url}/api/{service_name}?{'&'.join([f'{param}=deger' for param in api_info['params']])}",
         "telegram": WATRONS_TELEGRAM
     })
 
