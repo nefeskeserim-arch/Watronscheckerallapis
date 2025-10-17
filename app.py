@@ -5,10 +5,11 @@ import requests
 import time
 import os
 from collections import defaultdict
+import logging
 
 app = Flask(__name__)
 
-# 🛡️ DDoS KORUMA
+# DDoS koruma
 limiter = Limiter(
     get_remote_address,
     app=app,
@@ -18,38 +19,52 @@ limiter = Limiter(
 
 REQUEST_TRACKER = defaultdict(list)
 BLOCKED_IPS = set()
+REQUEST_COUNTER = 0
 
 def check_ddos_protection(ip):
     now = time.time()
-    recent_requests = [req_time for req_time in REQUEST_TRACKER[ip] if now - req_time < 60]
-    if len(recent_requests) > 30:
+    recent = [t for t in REQUEST_TRACKER[ip] if now - t < 60]
+    if len(recent) > 30:
         BLOCKED_IPS.add(ip)
         return False
-    second_requests = [req_time for req_time in recent_requests if now - req_time < 1]
-    if len(second_requests) > 5:
+    sec_req = [t for t in recent if now - t < 1]
+    if len(sec_req) > 5:
         BLOCKED_IPS.add(ip)
         return False
-    REQUEST_TRACKER[ip] = recent_requests[-50:]
+    REQUEST_TRACKER[ip] = recent[-50:]
     return True
 
 @app.before_request
 def before_each_request():
+    global REQUEST_COUNTER
     client_ip = get_remote_address()
+
     if client_ip in BLOCKED_IPS:
         return jsonify({
             "error": "Blocked - Too many requests",
             "message": "IP adresiniz geçici olarak bloke edildi",
             "telegram": "https://t.me/watronschecker"
         }), 429
+
     if not check_ddos_protection(client_ip):
         return jsonify({
-            "error": "Rate limit exceeded", 
+            "error": "Rate limit exceeded",
             "message": "Çok fazla istek gönderdiniz",
             "telegram": "https://t.me/watronschecker"
         }), 429
-    REQUEST_TRACKER[client_ip].append(time.time())
 
-# CORS
+    REQUEST_TRACKER[client_ip].append(time.time())
+    REQUEST_COUNTER += 1
+
+    if REQUEST_COUNTER % 1000 == 0:
+        keys = list(REQUEST_TRACKER.keys())
+        for ip in keys:
+            if len(REQUEST_TRACKER[ip]) > 50:
+                REQUEST_TRACKER[ip] = REQUEST_TRACKER[ip][-20:]
+        if len(keys) > 2000:
+            for ip in keys[:1000]:
+                del REQUEST_TRACKER[ip]
+
 @app.after_request
 def after_request(response):
     response.headers.add('Access-Control-Allow-Origin', '*')
@@ -57,15 +72,13 @@ def after_request(response):
     response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
     return response
 
-# WATRONS BRANDING
 WATRONS_TELEGRAM = "https://t.me/watronschecker"
 WATRONS_CREATOR = "@tanrigibi"
 
-# DOMAIN OTOMATİK ALGILAMA
 def get_base_url():
     return request.host_url.rstrip('/')
 
-# TÜM API'LER VE PARAMETRELERİ
+# --- Tüm API’ler (senin verdiğin liste) ---
 TARGET_APIS = {
     "secmen": {"url": "http://api.nabi.gt.tc/secmen", "params": ["tc"]},
     "ogretmen": {"url": "http://api.nabi.gt.tc/ogretmen", "params": ["tc"]},
@@ -156,7 +169,7 @@ TARGET_APIS = {
     "valorant": {"url": "https://nabi-yeni-api.onrender.com/command/valorant", "params": []},
     "facebook": {"url": "https://nabi-yeni-api.onrender.com/command/facebook", "params": []},
     "troy": {"url": "https://nabi-yeni-api.onrender.com/command/troy", "params": []},
-    "iyzico": {"url": "https://he.nabinin-sikis-cc-api.gt.tc/iyzico", "params": []}
+    "iyzico": {"url": "https://he.nabinin-sikis-cc-api.gt.tc/iyzico", "params": []},
 }
 
 @app.route('/')
@@ -164,19 +177,16 @@ TARGET_APIS = {
 def home():
     base_url = get_base_url()
     api_list = {}
-    
-    for api_name, api_info in TARGET_APIS.items():
-        example_url = f"{base_url}/api/{api_name}"
-        if api_info["params"]:
-            example_url += "?" + "&".join([f"{param}=deger" for param in api_info["params"]])
-        
-        api_list[api_name] = {
-            "url": f"{base_url}/api/{api_name}",
-            "target_api": api_info["url"],
-            "parameters": api_info["params"],
-            "example": example_url
+    for name, info in TARGET_APIS.items():
+        example = f"{base_url}/api/{name}"
+        if info["params"]:
+            example += "?" + "&".join([f"{p}=deger" for p in info["params"]])
+        api_list[name] = {
+            "url": f"{base_url}/api/{name}",
+            "target_api": info["url"],
+            "parameters": info["params"],
+            "example": example
         }
-    
     return jsonify({
         "message": "Watrons Checker API",
         "creator": WATRONS_CREATOR,
@@ -190,7 +200,7 @@ def home():
 @app.route('/health')
 def health():
     return jsonify({
-        "status": "healthy", 
+        "status": "healthy",
         "timestamp": time.time(),
         "base_url": get_base_url()
     })
@@ -200,80 +210,58 @@ def health():
 def api_proxy(service_name):
     if service_name not in TARGET_APIS:
         return jsonify({
-            "error": "API not found", 
+            "error": "API not found",
             "available_apis": list(TARGET_APIS.keys())[:10],
             "telegram": WATRONS_TELEGRAM
         }), 404
-    
     api_info = TARGET_APIS[service_name]
     target_url = api_info["url"]
     expected_params = api_info["params"]
-    
     try:
-        # Tüm parametreleri topla
         if request.method == 'GET':
             params = request.args.to_dict()
         else:
             params = request.get_json() if request.is_json else request.form.to_dict()
-        
-        # Zorunlu parametre kontrolü
-        missing_params = []
-        for param in expected_params:
-            if param not in params or not params[param]:
-                missing_params.append(param)
-        
-        if missing_params:
+        missing = [p for p in expected_params if p not in params or not params[p]]
+        if missing:
             return jsonify({
                 "error": "Missing parameters",
                 "required_params": expected_params,
-                "missing": missing_params,
+                "missing": missing,
                 "example": f"{get_base_url()}/api/{service_name}?{'&'.join([f'{p}=deger' for p in expected_params])}",
                 "telegram": WATRONS_TELEGRAM
             }), 400
-        
-        # 🕒 TIMEOUT'U 60 SANİYEYE ÇIKAR + RETRY
-        timeout_duration = 60
-        
+        timeout = 60
         for attempt in range(3):
             try:
                 if request.method == 'GET':
-                    response = requests.get(target_url, params=params, timeout=timeout_duration)
+                    resp = requests.get(target_url, params=params, timeout=timeout)
                 else:
-                    response = requests.post(target_url, data=params, timeout=timeout_duration)
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    if isinstance(result, dict):
-                        if 'creator' in result:
-                            result['creator'] = WATRONS_CREATOR
-                        if 'telegram' in result:
-                            result['telegram'] = WATRONS_TELEGRAM
-                        else:
-                            result['telegram'] = WATRONS_TELEGRAM
+                    resp = requests.post(target_url, data=params, timeout=timeout)
+                if resp.status_code == 200:
+                    result = resp.json()
+                    result["telegram"] = WATRONS_TELEGRAM
+                    result["creator"] = WATRONS_CREATOR
                     return jsonify(result)
-                elif response.status_code >= 500:
+                elif resp.status_code >= 500:
                     continue
                 else:
                     return jsonify({
-                        "error": f"API error: {response.status_code}",
+                        "error": f"API error: {resp.status_code}",
                         "telegram": WATRONS_TELEGRAM
-                    }), response.status_code
-                    
+                    }), resp.status_code
             except requests.exceptions.Timeout:
                 if attempt < 2:
                     time.sleep(2)
                     continue
-                else:
-                    return jsonify({
-                        "error": "API timeout after 3 attempts",
-                        "telegram": WATRONS_TELEGRAM
-                    }), 504
-                    
+                return jsonify({
+                    "error": "API timeout after 3 attempts",
+                    "telegram": WATRONS_TELEGRAM
+                }), 504
         return jsonify({
             "error": "All attempts failed",
             "telegram": WATRONS_TELEGRAM
         }), 500
-            
     except Exception as e:
         return jsonify({
             "error": f"Internal error: {str(e)}",
@@ -283,23 +271,20 @@ def api_proxy(service_name):
 @app.route('/api/<service_name>/help', methods=['GET'])
 def api_help(service_name):
     if service_name not in TARGET_APIS:
-        return jsonify({
-            "error": "API not found",
-            "telegram": WATRONS_TELEGRAM
-        }), 404
-    
-    api_info = TARGET_APIS[service_name]
+        return jsonify({"error": "API not found", "telegram": WATRONS_TELEGRAM}), 404
+    info = TARGET_APIS[service_name]
     base_url = get_base_url()
-    
     return jsonify({
         "api": service_name,
         "your_endpoint": f"{base_url}/api/{service_name}",
-        "target_api": api_info["url"],
-        "required_parameters": api_info["params"],
-        "example": f"{base_url}/api/{service_name}?{'&'.join([f'{param}=deger' for param in api_info['params']])}",
+        "target_api": info["url"],
+        "required_parameters": info["params"],
+        "example": f"{base_url}/api/{service_name}?{'&'.join([f'{p}=deger' for p in info['params']])}",
         "telegram": WATRONS_TELEGRAM
     })
 
 if __name__ == '__main__':
+    log = logging.getLogger('werkzeug')
+    log.disabled = True
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port, debug=False)
